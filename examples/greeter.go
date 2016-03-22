@@ -1,20 +1,28 @@
 package main
 
 import (
-	"gopkg.in/antage/eventsource.v1"
+	"github.com/cw35/eventsource"
 	"log"
 	"net/http"
 	"time"
 )
 
+func getSubscribeKey(req *http.Request) string {
+	return req.Header.Get("Authorization")
+}
+
+func getSessionKey(req *http.Request) string {
+	return req.Header.Get("Authorization")
+}
+
 func main() {
-	es := eventsource.New(nil, nil)
+	es := eventsource.New(nil, nil, getSessionKey, getSubscribeKey)
 	defer es.Close()
 	http.Handle("/", http.FileServer(http.Dir("./public")))
 	http.Handle("/events", es)
 	go func() {
 		for {
-			es.SendEventMessage("hello", "", "")
+			es.SendEventMessage("hello", "", "", "")
 			log.Printf("Hello has been sent (consumers: %d)", es.ConsumersCount())
 			time.Sleep(2 * time.Second)
 		}

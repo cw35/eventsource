@@ -12,9 +12,10 @@ import (
 )
 
 type eventMessage struct {
-	id    string
-	event string
-	data  string
+	id           string
+	event        string
+	data         string
+	subscribeKey string
 }
 
 type retryMessage struct {
@@ -22,7 +23,9 @@ type retryMessage struct {
 }
 
 type eventSource struct {
-	customHeadersFunc func(*http.Request) [][]byte
+	customHeadersFunc       func(*http.Request) [][]byte
+	getConsumerSubscribeKey func(*http.Request) string
+	getConsumerSessionKey   func(*http.Request) string
 
 	sink           chan message
 	staled         chan *consumer
@@ -79,10 +82,15 @@ type EventSource interface {
 	http.Handler
 
 	// send message to all consumers
-	SendEventMessage(data, event, id string)
+	BroadcastEventMessage(data, event, id string)
+
+	SendEventMessage(data, event, id, subscribeKey string)
 
 	// send retry message to all consumers
-	SendRetryMessage(duration time.Duration)
+	BroadcastRetryMessage(duration time.Duration)
+
+	GetConsumerSubscribeKeys() []string
+	GetConsumerSessionKeys() []string
 
 	// consumers count
 	ConsumersCount() int
@@ -94,6 +102,11 @@ type EventSource interface {
 type message interface {
 	// The message to be sent to clients
 	prepareMessage() []byte
+	getSubscribeKey() string
+}
+
+func (m *eventMessage) getSubscribeKey() string {
+	return m.subscribeKey
 }
 
 func (m *eventMessage) prepareMessage() []byte {
@@ -126,8 +139,8 @@ func controlProcess(es *eventSource) {
 				for e := es.consumers.Front(); e != nil; e = e.Next() {
 					c := e.Value.(*consumer)
 
-					// Only send this message if the consumer isn't staled
-					if !c.staled {
+					// Only send this message if the consumer isn't staled, and the subscribe key matches
+					if !c.staled && (len(em.getSubscribeKey()) == 0 || em.getSubscribeKey() == c.subscribeKey) {
 						select {
 						case c.in <- message:
 						default:
@@ -189,12 +202,16 @@ func controlProcess(es *eventSource) {
 }
 
 // New creates new EventSource instance.
-func New(settings *Settings, customHeadersFunc func(*http.Request) [][]byte) EventSource {
+func New(settings *Settings, customHeadersFunc func(*http.Request) [][]byte, getConsumerSessionKey func(*http.Request) string,
+	getConsumerSubscribeKey func(*http.Request) string) EventSource {
+
 	if settings == nil {
 		settings = DefaultSettings()
 	}
 
 	es := new(eventSource)
+	es.getConsumerSubscribeKey = getConsumerSubscribeKey
+	es.getConsumerSessionKey = getConsumerSessionKey
 	es.customHeadersFunc = customHeadersFunc
 	es.sink = make(chan message, 1)
 	es.close = make(chan bool)
@@ -227,16 +244,24 @@ func (es *eventSource) sendMessage(m message) {
 	es.sink <- m
 }
 
-func (es *eventSource) SendEventMessage(data, event, id string) {
-	em := &eventMessage{id, event, data}
+func (es *eventSource) BroadcastEventMessage(data, event, id string) {
+	es.SendEventMessage(data, event, id, "")
+}
+
+func (es *eventSource) SendEventMessage(data, event, id, subscribeKey string) {
+	em := &eventMessage{id, event, data, subscribeKey}
 	es.sendMessage(em)
+}
+
+func (m *retryMessage) getSubscribeKey() string {
+	return ""
 }
 
 func (m *retryMessage) prepareMessage() []byte {
 	return []byte(fmt.Sprintf("retry: %d\n\n", m.retry/time.Millisecond))
 }
 
-func (es *eventSource) SendRetryMessage(t time.Duration) {
+func (es *eventSource) BroadcastRetryMessage(t time.Duration) {
 	es.sendMessage(&retryMessage{t})
 }
 
@@ -245,4 +270,46 @@ func (es *eventSource) ConsumersCount() int {
 	defer es.consumersLock.RUnlock()
 
 	return es.consumers.Len()
+}
+
+func (es *eventSource) GetConsumerSubscribeKeys() []string {
+	es.consumersLock.RLock()
+	defer es.consumersLock.RUnlock()
+
+	subscribeKeyMap := map[string]bool{}
+	for e := es.consumers.Front(); e != nil; e = e.Next() {
+		c := e.Value.(*consumer)
+		// Only send this message if the consumer isn't staled, and the subscribe key matches
+		if !c.staled && len(c.subscribeKey) > 0 {
+			subscribeKeyMap[c.subscribeKey] = true
+		}
+	}
+
+	subscribeKeys := []string{}
+	for key, _ := range subscribeKeyMap {
+		subscribeKeys = append(subscribeKeys, key)
+	}
+
+	return subscribeKeys
+}
+
+func (es *eventSource) GetConsumerSessionKeys() []string {
+	es.consumersLock.RLock()
+	defer es.consumersLock.RUnlock()
+
+	sessionKeyMap := map[string]bool{}
+	for e := es.consumers.Front(); e != nil; e = e.Next() {
+		c := e.Value.(*consumer)
+		// Only send this message if the consumer isn't staled, and the subscribe key matches
+		if !c.staled && len(c.sessionKey) > 0 {
+			sessionKeyMap[c.sessionKey] = true
+		}
+	}
+
+	sessionKeys := []string{}
+	for key, _ := range sessionKeyMap {
+		sessionKeys = append(sessionKeys, key)
+	}
+
+	return sessionKeys
 }

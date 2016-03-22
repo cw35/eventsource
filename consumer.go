@@ -10,10 +10,12 @@ import (
 )
 
 type consumer struct {
-	conn   io.WriteCloser
-	es     *eventSource
-	in     chan []byte
-	staled bool
+	subscribeKey string
+	sessionKey   string
+	conn         io.WriteCloser
+	es           *eventSource
+	in           chan []byte
+	staled       bool
 }
 
 type gzipConn struct {
@@ -45,11 +47,24 @@ func newConsumer(resp http.ResponseWriter, req *http.Request, es *eventSource) (
 		return nil, err
 	}
 
+	subscribeKey := ""
+	sessionKey := ""
+
+	if es.getConsumerSessionKey != nil {
+		sessionKey = es.getConsumerSessionKey(req)
+	}
+
+	if es.getConsumerSubscribeKey != nil {
+		subscribeKey = es.getConsumerSubscribeKey(req)
+	}
+
 	consumer := &consumer{
-		conn:   conn,
-		es:     es,
-		in:     make(chan []byte, 10),
-		staled: false,
+		subscribeKey: subscribeKey,
+		sessionKey:   sessionKey,
+		conn:         conn,
+		es:           es,
+		in:           make(chan []byte, 10),
+		staled:       false,
 	}
 
 	_, err = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"))
