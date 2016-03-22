@@ -16,6 +16,7 @@ type eventMessage struct {
 	event        string
 	data         string
 	subscribeKey string
+	sessionKey   string
 }
 
 type retryMessage struct {
@@ -91,8 +92,8 @@ type EventSource interface {
 
 	// send message to all consumers
 	BroadcastEventMessage(data, event, id string)
-
-	SendEventMessage(data, event, id, subscribeKey string)
+	BroadcastEventMessageWithSubscribeKey(data, event, id, subscribeKey string)
+	SendEventMessage(data, event, id, subscribeKey, sessionKey string)
 
 	// send retry message to all consumers
 	BroadcastRetryMessage(duration time.Duration)
@@ -114,12 +115,17 @@ type EventSource interface {
 type message interface {
 	// The message to be sent to clients
 	prepareMessage() []byte
+	getSessionKey() string
 	getSubscribeKey() string
 	getId() string
 }
 
 func (m *eventMessage) getSubscribeKey() string {
 	return m.subscribeKey
+}
+
+func (m *eventMessage) getSessionKey() string {
+	return m.sessionKey
 }
 
 func (m *eventMessage) getId() string {
@@ -158,11 +164,14 @@ func controlProcess(es *eventSource) {
 
 					// Only send this message if the consumer isn't staled, and the subscribe key matches
 					subscribeKey := em.getSubscribeKey()
-					if !c.staled && (len(subscribeKey) == 0 || subscribeKey == c.subscribeKey) {
+					sessionKey := c.sessionKey
+					if !c.staled &&
+						(len(subscribeKey) == 0 || subscribeKey == c.subscribeKey) &&
+						(len(sessionKey) == 0 || sessionKey == c.sessionKey) {
+
 						select {
 						case c.in <- message:
 							go func() {
-								sessionKey := c.sessionKey
 								if id := em.getId(); len(id) > 0 {
 									for _, handler := range es.messageSentListener {
 										handler(id, subscribeKey, sessionKey)
@@ -292,12 +301,20 @@ func (es *eventSource) sendMessage(m message) {
 }
 
 func (es *eventSource) BroadcastEventMessage(data, event, id string) {
-	es.SendEventMessage(data, event, id, "")
+	es.BroadcastEventMessageWithSubscribeKey(data, event, id, "")
 }
 
-func (es *eventSource) SendEventMessage(data, event, id, subscribeKey string) {
-	em := &eventMessage{id, event, data, subscribeKey}
+func (es *eventSource) BroadcastEventMessageWithSubscribeKey(data, event, id, subscribeKey string) {
+	es.SendEventMessage(data, event, id, subscribeKey, "")
+}
+
+func (es *eventSource) SendEventMessage(data, event, id, subscribeKey, sessionKey string) {
+	em := &eventMessage{id, event, data, subscribeKey, sessionKey}
 	es.sendMessage(em)
+}
+
+func (m *retryMessage) getSessionKey() string {
+	return ""
 }
 
 func (m *retryMessage) getSubscribeKey() string {

@@ -39,7 +39,7 @@ func main() {
 	http.Handle("/events", es)
 	go func() {
 		for {
-			es.SendEventMessage("hello", "", "", "")
+			es.BroadcastEventMessage("hello", "", "")
 			log.Printf("Hello has been sent (consumers: %d)", es.ConsumersCount())
 			time.Sleep(2 * time.Second)
 		}
