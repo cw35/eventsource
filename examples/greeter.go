@@ -15,8 +15,25 @@ func getSessionKey(req *http.Request) string {
 	return req.Header.Get("Authorization")
 }
 
+func consumerStatusListener(subscribeKey, sessionKey string, status int) {
+	log.Println("consumerStatusListener", subscribeKey, sessionKey, status)
+}
+
+func messageSentListener(messageId, subscribeKey, sessionKey string) {
+	log.Println("messageSentListener", messageId, subscribeKey, sessionKey)
+}
+
+func customHeaders(req *http.Request) [][]byte {
+	return [][]byte{
+		[]byte("Cache-Control: no-cache"),
+		[]byte("Connection: keep-alive"),
+	}
+}
+
 func main() {
-	es := eventsource.New(nil, nil, getSessionKey, getSubscribeKey)
+	es := eventsource.New(nil, customHeaders, getSessionKey, getSubscribeKey)
+	es.AddMessageSentListener([]func(string, string, string){messageSentListener})
+	es.AddConsumerStatusListener([]func(string, string, int){consumerStatusListener})
 	defer es.Close()
 	http.Handle("/", http.FileServer(http.Dir("./public")))
 	http.Handle("/events", es)

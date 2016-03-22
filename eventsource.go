@@ -22,10 +22,18 @@ type retryMessage struct {
 	retry time.Duration
 }
 
+const (
+	ConsumerStatusConnected int = 0x1
+	ConsumerStatusStaled    int = 0x2
+)
+
 type eventSource struct {
 	customHeadersFunc       func(*http.Request) [][]byte
 	getConsumerSubscribeKey func(*http.Request) string
 	getConsumerSessionKey   func(*http.Request) string
+
+	messageSentListener    []func(string, string, string)
+	consumerStatusListener []func(string, string, int)
 
 	sink           chan message
 	staled         chan *consumer
@@ -79,7 +87,7 @@ func DefaultSettings() *Settings {
 // EventSource interface provides methods for sending messages and closing all connections.
 type EventSource interface {
 	// it should implement ServerHTTP method
-	http.Handler
+	ServeHTTP(http.ResponseWriter, *http.Request)
 
 	// send message to all consumers
 	BroadcastEventMessage(data, event, id string)
@@ -92,6 +100,9 @@ type EventSource interface {
 	GetConsumerSubscribeKeys() []string
 	GetConsumerSessionKeys() []string
 
+	AddMessageSentListener(listeners []func(string, string, string))
+	AddConsumerStatusListener(listeners []func(string, string, int))
+
 	// consumers count
 	ConsumersCount() int
 
@@ -103,10 +114,15 @@ type message interface {
 	// The message to be sent to clients
 	prepareMessage() []byte
 	getSubscribeKey() string
+	getId() string
 }
 
 func (m *eventMessage) getSubscribeKey() string {
 	return m.subscribeKey
+}
+
+func (m *eventMessage) getId() string {
+	return m.id
 }
 
 func (m *eventMessage) prepareMessage() []byte {
@@ -140,9 +156,19 @@ func controlProcess(es *eventSource) {
 					c := e.Value.(*consumer)
 
 					// Only send this message if the consumer isn't staled, and the subscribe key matches
-					if !c.staled && (len(em.getSubscribeKey()) == 0 || em.getSubscribeKey() == c.subscribeKey) {
+					subscribeKey := em.getSubscribeKey()
+					if !c.staled && (len(subscribeKey) == 0 || subscribeKey == c.subscribeKey) {
 						select {
 						case c.in <- message:
+							go func() {
+								sessionKey := c.sessionKey
+								if id := em.getId(); len(id) > 0 {
+									for _, handler := range es.messageSentListener {
+										handler(id, subscribeKey, sessionKey)
+									}
+								}
+							}()
+
 						default:
 						}
 					}
@@ -161,6 +187,12 @@ func controlProcess(es *eventSource) {
 				for e := es.consumers.Front(); e != nil; e = e.Next() {
 					c := e.Value.(*consumer)
 					close(c.in)
+
+					go func(subscribeKey, sessionKey string) {
+						for _, handler := range es.consumerStatusListener {
+							handler(subscribeKey, sessionKey, ConsumerStatusStaled)
+						}
+					}(c.subscribeKey, c.sessionKey)
 				}
 			}()
 
@@ -175,6 +207,12 @@ func controlProcess(es *eventSource) {
 				defer es.consumersLock.Unlock()
 
 				es.consumers.PushBack(c)
+
+				go func(subscribeKey, sessionKey string) {
+					for _, handler := range es.consumerStatusListener {
+						handler(subscribeKey, sessionKey, ConsumerStatusConnected)
+					}
+				}(c.subscribeKey, c.sessionKey)
 			}()
 		case c := <-es.staled:
 			toRemoveEls := make([]*list.Element, 0, 1)
@@ -187,6 +225,12 @@ func controlProcess(es *eventSource) {
 						toRemoveEls = append(toRemoveEls, e)
 					}
 				}
+
+				go func(subscribeKey, sessionKey string) {
+					for _, handler := range es.consumerStatusListener {
+						handler(subscribeKey, sessionKey, ConsumerStatusStaled)
+					}
+				}(c.subscribeKey, c.sessionKey)
 			}()
 			func() {
 				es.consumersLock.Lock()
@@ -210,6 +254,8 @@ func New(settings *Settings, customHeadersFunc func(*http.Request) [][]byte, get
 	}
 
 	es := new(eventSource)
+	es.messageSentListener = []func(string, string, string){}
+	es.consumerStatusListener = []func(string, string, int){}
 	es.getConsumerSubscribeKey = getConsumerSubscribeKey
 	es.getConsumerSessionKey = getConsumerSessionKey
 	es.customHeadersFunc = customHeadersFunc
@@ -254,6 +300,10 @@ func (es *eventSource) SendEventMessage(data, event, id, subscribeKey string) {
 }
 
 func (m *retryMessage) getSubscribeKey() string {
+	return ""
+}
+
+func (m *retryMessage) getId() string {
 	return ""
 }
 
@@ -312,4 +362,12 @@ func (es *eventSource) GetConsumerSessionKeys() []string {
 	}
 
 	return sessionKeys
+}
+
+func (es *eventSource) AddMessageSentListener(listeners []func(string, string, string)) {
+	es.messageSentListener = append(es.messageSentListener, listeners...)
+}
+
+func (es *eventSource) AddConsumerStatusListener(listeners []func(string, string, int)) {
+	es.consumerStatusListener = append(es.consumerStatusListener, listeners...)
 }
