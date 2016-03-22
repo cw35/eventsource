@@ -99,6 +99,7 @@ type EventSource interface {
 
 	GetConsumerSubscribeKeys() []string
 	GetConsumerSessionKeys() []string
+	GetConsumerSessionSubscribeKeyMap() map[string]string
 
 	AddMessageSentListener(listeners []func(string, string, string))
 	AddConsumerStatusListener(listeners []func(string, string, int))
@@ -329,7 +330,7 @@ func (es *eventSource) GetConsumerSubscribeKeys() []string {
 	subscribeKeyMap := map[string]bool{}
 	for e := es.consumers.Front(); e != nil; e = e.Next() {
 		c := e.Value.(*consumer)
-		// Only send this message if the consumer isn't staled, and the subscribe key matches
+		// Only send this message if the consumer isn't staled, and the subscribe key is not empty
 		if !c.staled && len(c.subscribeKey) > 0 {
 			subscribeKeyMap[c.subscribeKey] = true
 		}
@@ -350,7 +351,7 @@ func (es *eventSource) GetConsumerSessionKeys() []string {
 	sessionKeyMap := map[string]bool{}
 	for e := es.consumers.Front(); e != nil; e = e.Next() {
 		c := e.Value.(*consumer)
-		// Only send this message if the consumer isn't staled, and the subscribe key matches
+		// Only send this message if the consumer isn't staled, and the session key is not empty
 		if !c.staled && len(c.sessionKey) > 0 {
 			sessionKeyMap[c.sessionKey] = true
 		}
@@ -362,6 +363,22 @@ func (es *eventSource) GetConsumerSessionKeys() []string {
 	}
 
 	return sessionKeys
+}
+
+func (es *eventSource) GetConsumerSessionSubscribeKeyMap() map[string]string {
+	es.consumersLock.RLock()
+	defer es.consumersLock.RUnlock()
+
+	sessionSubscribeMap := map[string]string{}
+	for e := es.consumers.Front(); e != nil; e = e.Next() {
+		c := e.Value.(*consumer)
+		// Only send this message if the consumer isn't staled, and the session key, subscribe key are not empty
+		if !c.staled && len(c.sessionKey) > 0 && len(c.subscribeKey) > 0 {
+			sessionSubscribeMap[c.sessionKey] = c.subscribeKey
+		}
+	}
+
+	return sessionSubscribeMap
 }
 
 func (es *eventSource) AddMessageSentListener(listeners []func(string, string, string)) {
